@@ -64,11 +64,12 @@ async function createSession() {
 		"appium:deviceName": env.SIM_NAME || "iPhone",
 		"appium:platformVersion": env.SIM_OS,
 		"appium:showSafariConsoleLog": true,
-		"appium:safariInitialUrl": "about:blank",
+		"appium:safariInitialUrl": `${BASE_URL}/`,
+		"appium:webviewConnectTimeout": 60000,
+		"appium:webviewConnectRetries": 20,
 		"appium:wdaLaunchTimeout": 240000,
 		"appium:wdaConnectionTimeout": 240000,
 		"appium:newCommandTimeout": 300,
-		"appium:noReset": true,
 	}
 	if (env.WDA_PATH) {
 		caps["appium:usePreinstalledWDA"] = true

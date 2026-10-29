@@ -92,6 +92,11 @@ jobs:
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:4723/status >/dev/null && echo "appium up" && exit 0; sleep 1; done
           cat "$RUNNER_TEMP/appium.log"; exit 1
 
+      - name: Warm up Safari
+        run: |
+          xcrun simctl openurl "$SIM_UDID" "$BASE_URL/"
+          sleep 20
+
       - name: Run Safari smoke
         run: node tools/ios-safari-smoke/run.mjs
 

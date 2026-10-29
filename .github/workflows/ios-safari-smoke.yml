@@ -1,0 +1,111 @@
+# Real Mobile Safari on an iOS Simulator (GitHub-hosted macOS), read-only smoke of public pages.
+# Manual trigger only (macOS minutes). Script: tools/ios-safari-smoke/run.mjs.
+name: iOS Safari smoke (simulator, prod, manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      paths:
+        description: "Comma-separated paths to override the default page list (e.g. /tpd2026,/checkout)"
+        required: false
+        default: ""
+
+concurrency:
+  group: ios-safari-smoke
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: macos-26
+    timeout-minutes: 20
+    env:
+      BASE_URL: https://www.farmalink.com.tr
+      OUT_DIR: ios-safari-smoke-out
+      PATHS: ${{ inputs.paths }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Toolchain + pick iPhone simulator
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+          # Newest available iOS runtime, then prefer a current non-Max iPhone on it.
+          read -r UDID NAME OS < <(xcrun simctl list devices available -j | python3 -c '
+          import json, sys, re
+          d = json.load(sys.stdin)["devices"]
+          rts = sorted((k for k in d if "SimRuntime.iOS-" in k and d[k]),
+                       key=lambda k: [int(x) for x in re.findall(r"\d+", k.split("iOS-")[1])], reverse=True)
+          for rt in rts:
+              phones = [x for x in d[rt] if x["name"].startswith("iPhone")]
+              if not phones: continue
+              pref = ["iPhone 17 Pro", "iPhone 17", "iPhone 16 Pro", "iPhone 16"]
+              phones.sort(key=lambda x: pref.index(x["name"]) if x["name"] in pref else 99)
+              p = phones[0]
+              print(p["udid"], p["name"].replace(" ", "_"), rt.split("iOS-")[1].replace("-", "."))
+              break
+          ')
+          echo "Picked: $NAME iOS $OS ($UDID)"
+          test -n "$UDID"
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+          echo "SIM_NAME=${NAME//_/ }" >> "$GITHUB_ENV"
+          echo "SIM_OS=$OS" >> "$GITHUB_ENV"
+
+      - name: Boot simulator (with retry)
+        run: |
+          for attempt in 1 2 3; do
+            echo "boot attempt $attempt"
+            xcrun simctl boot "$SIM_UDID" 2>/dev/null || true
+            if perl -e 'alarm 240; exec @ARGV' xcrun simctl bootstatus "$SIM_UDID" -b; then
+              echo "booted"; exit 0
+            fi
+            xcrun simctl shutdown "$SIM_UDID" 2>/dev/null || true
+            [ "$attempt" = 2 ] && xcrun simctl erase "$SIM_UDID" || true
+            sleep 5
+          done
+          echo "::error::simulator failed to boot after 3 attempts"; exit 1
+
+      - name: Install Appium + xcuitest driver
+        run: |
+          npm install -g appium@3
+          appium driver install xcuitest
+          appium driver list --installed
+          # Prebuilt simulator WebDriverAgent saves the 2-4 min xcodebuild of WDA; fall back to a
+          # normal build if the download is not available for this driver/Xcode.
+          mkdir -p "$RUNNER_TEMP/wda"
+          if appium driver run xcuitest download-wda-sim --platform=ios --outdir="$RUNNER_TEMP/wda"; then
+            WDA_APP=$(find "$RUNNER_TEMP/wda" -maxdepth 2 -name '*.app' | head -1)
+            [ -n "$WDA_APP" ] && echo "WDA_PATH=$WDA_APP" >> "$GITHUB_ENV" && echo "prebuilt WDA: $WDA_APP"
+          else
+            echo "prebuilt WDA unavailable; Appium will build it"
+          fi
+
+      - name: Start Appium
+        run: |
+          nohup appium --address 127.0.0.1 --port 4723 --log-timestamp > "$RUNNER_TEMP/appium.log" 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:4723/status >/dev/null && echo "appium up" && exit 0; sleep 1; done
+          cat "$RUNNER_TEMP/appium.log"; exit 1
+
+      - name: Run Safari smoke
+        run: node tools/ios-safari-smoke/run.mjs
+
+      - name: Collect logs
+        if: always()
+        run: |
+          mkdir -p "$OUT_DIR"
+          cp "$RUNNER_TEMP/appium.log" "$OUT_DIR/" 2>/dev/null || true
+          xcrun simctl list devices booted > "$OUT_DIR/simulator.txt" 2>&1 || true
+          ls -la "$OUT_DIR"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-safari-smoke
+          path: ios-safari-smoke-out
+          retention-days: 14

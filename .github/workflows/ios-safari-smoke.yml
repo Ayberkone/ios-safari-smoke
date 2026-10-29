@@ -20,7 +20,7 @@ permissions:
 jobs:
   smoke:
     runs-on: macos-26
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       BASE_URL: https://www.farmalink.com.tr
       OUT_DIR: ios-safari-smoke-out
@@ -79,7 +79,7 @@ jobs:
           # Prebuilt simulator WebDriverAgent saves the 2-4 min xcodebuild of WDA; fall back to a
           # normal build if the download is not available for this driver/Xcode.
           mkdir -p "$RUNNER_TEMP/wda"
-          if appium driver run xcuitest download-wda-sim --platform=ios --outdir="$RUNNER_TEMP/wda"; then
+          if appium driver run xcuitest download-wda -- --kind=sim --platform=ios --outdir="$RUNNER_TEMP/wda"; then
             WDA_APP=$(find "$RUNNER_TEMP/wda" -maxdepth 2 -name '*.app' | head -1)
             [ -n "$WDA_APP" ] && echo "WDA_PATH=$WDA_APP" >> "$GITHUB_ENV" && echo "prebuilt WDA: $WDA_APP"
           else

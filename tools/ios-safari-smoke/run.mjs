@@ -13,6 +13,7 @@
 //      OUT_DIR, APPIUM_URL, WDA_PATH (optional prebuilt WebDriverAgent .app).
 
 import { execFileSync } from "node:child_process"
+import http from "node:http"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
@@ -41,18 +42,34 @@ const log = (msg) => process.stdout.write(`[ios-smoke] ${msg}\n`)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const slug = (p) => p.replace(/^\//, "").replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_|_$/g, "") || "home"
 
-async function wd(method, path, body) {
-	const res = await fetch(`${APPIUM}${path}`, {
-		method,
-		headers: { "content-type": "application/json" },
-		body: body === undefined ? undefined : JSON.stringify(body),
+// node:http instead of fetch: fetch (undici) aborts after 300 s without response headers, and
+// the first POST /session builds + launches WebDriverAgent, which takes longer than that.
+function wd(method, path, body) {
+	const payload = body === undefined ? undefined : JSON.stringify(body)
+	const url = new URL(`${APPIUM}${path}`)
+	return new Promise((resolve, reject) => {
+		const req = http.request(
+			{ method, hostname: url.hostname, port: url.port, path: url.pathname, headers: payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {} },
+			(res) => {
+				let data = ""
+				res.setEncoding("utf8")
+				res.on("data", (c) => (data += c))
+				res.on("end", () => {
+					let json = {}
+					try { json = JSON.parse(data) } catch { /* non-JSON body: handled below */ }
+					if (res.statusCode >= 400 || (json.value && json.value.error)) {
+						const err = json.value && json.value.error ? `${json.value.error}: ${json.value.message}` : `HTTP ${res.statusCode}`
+						return reject(new Error(`${method} ${path} → ${err}`))
+					}
+					resolve(json.value)
+				})
+			},
+		)
+		req.setTimeout(15 * 60 * 1000, () => req.destroy(new Error(`${method} ${path} → timed out`)))
+		req.on("error", reject)
+		if (payload) req.write(payload)
+		req.end()
 	})
-	const json = await res.json().catch(() => ({}))
-	if (!res.ok || (json.value && json.value.error)) {
-		const err = json.value && json.value.error ? `${json.value.error}: ${json.value.message}` : `HTTP ${res.status}`
-		throw new Error(`${method} ${path} → ${err}`)
-	}
-	return json.value
 }
 
 async function createSession() {
